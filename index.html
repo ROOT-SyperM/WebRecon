@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Простой шумоподавитель (инверсия)</title>
+  <style>
+    :root{font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;}
+    body{display:flex;flex-direction:column;gap:18px;align-items:center;justify-content:center;height:100vh;margin:0;background:#0f172a;color:#e6eef8}
+    .card{background:linear-gradient(180deg,#111827cc,#0b1222cc);padding:24px;border-radius:12px;box-shadow:0 6px 30px rgba(2,6,23,.6);width:min(680px,92vw)}
+    h1{margin:0 0 8px 0;font-size:20px}
+    p{margin:0 0 12px 0;color:#bcd1ee}
+    .controls{display:flex;gap:10px}
+    button{padding:10px 16px;border-radius:10px;border:0;cursor:pointer;font-weight:600}
+    .start{background:#10b981;color:white}
+    .stop{background:#ef4444;color:white}
+    .note{font-size:13px;color:#9fb0d9;margin-top:12px}
+    .small{font-size:13px;color:#93c5fd}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Шумоподавитель — старт / стоп</h1>
+    <p>Две кнопки: <strong>Пуск</strong> захватывает микрофон и воспроизводит инвертированный сигнал в наушники/динамики. <strong>Стоп</strong> отключает всё. Это простая инверсия фазы (не настоящий ANC с датчиками и моделированием комнаты).</p>
+
+    <div class="controls">
+      <button id="startBtn" class="start">Пуск</button>
+      <button id="stopBtn" class="stop" disabled>Стоп</button>
+    </div>
+
+    <div class="note">Важно: для реального подавления внешнего шума требуется наладить задержки и физическое расположение мик/динамиков. Этот пример показывает принцип — инверсия звуковой волны.</div>
+    <div class="small">Совместимость: современные браузеры поддерживают AudioWorklet. Если что — открой в Chrome/Edge/Firefox (новые версии).</div>
+  </div>
+
+<script>
+// UI
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+
+let audioCtx = null;
+let micStream = null;
+let sourceNode = null;
+let workletNode = null;
+
+startBtn.addEventListener('click', start);
+stopBtn.addEventListener('click', stop);
+
+async function start(){
+  try{
+    startBtn.disabled = true;
+    // Запрос микрофона
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+
+    // Register inline AudioWorklet processor by creating blob URL
+    const processorCode = `
+      class InverterProcessor extends AudioWorkletProcessor {
+        process (inputs, outputs) {
+          const input = inputs[0];
+          const output = outputs[0];
+          if (!input || !input.length) return true;
+          for (let channel = 0; channel < output.length; ++channel) {
+            const inputChannel = input[channel] || input[0];
+            const outputChannel = output[channel];
+            for (let i = 0; i < inputChannel.length; ++i) {
+              // Простая инверсия фазы
+              outputChannel[i] = -inputChannel[i];
+            }
+          }
+          return true;
+        }
+      }
+      registerProcessor('inverter-processor', InverterProcessor);
+    `;
+
+    const blob = new Blob([processorCode], { type: 'application/javascript' });
+    const moduleUrl = URL.createObjectURL(blob);
+    await audioCtx.audioWorklet.addModule(moduleUrl);
+
+    sourceNode = audioCtx.createMediaStreamSource(micStream);
+    workletNode = new AudioWorkletNode(audioCtx, 'inverter-processor');
+
+    // Небольшой лимит громкости на выходе для безопасности
+    const outGain = audioCtx.createGain();
+    outGain.gain.value = 0.9;
+
+    sourceNode.connect(workletNode).connect(outGain).connect(audioCtx.destination);
+
+    stopBtn.disabled = false;
+    startBtn.disabled = true;
+  } catch (e){
+    console.error(e);
+    alert('Не удалось получить микрофон: ' + (e.message || e));
+    startBtn.disabled = false;
+  }
+}
+
+function stop(){
+  if (micStream){
+    micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
+  }
+  try{ if (sourceNode) sourceNode.disconnect(); } catch(e){}
+  try{ if (workletNode) workletNode.disconnect(); } catch(e){}
+  try{ if (audioCtx) audioCtx.close(); } catch(e){}
+  audioCtx = null; sourceNode = null; workletNode = null;
+  stopBtn.disabled = true;
+  startBtn.disabled = false;
+}
+
+</script>
+</body>
+</html>
